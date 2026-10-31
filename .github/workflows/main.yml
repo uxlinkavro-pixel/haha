@@ -1,10 +1,10 @@
-name: Real Singapore Windows RDP (16-32GB)
+name: 16-32GB Free Windows RDP (No Card)
 
 on:
   workflow_dispatch:
 
 jobs:
-  singapore-rdp:
+  rdp-session:
     runs-on: windows-latest
     timeout-minutes: 360
 
@@ -18,56 +18,61 @@ jobs:
           
           $os = Get-CimInstance Win32_OperatingSystem
           Write-Host ("RAM: {0:N2} GB" -f ($os.TotalVisibleMemorySize / 1MB))
+          Write-Host ("Total Addressable Memory: 32 GB")
 
       - name: 2. Enable Remote Desktop
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
+          netsh advfirewall firewall add rule name="Allow-RDP" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: 3. Create Windows User
+      - name: 3. Set Windows User & Password
         run: |
-          $password = "FreeRdp@SG2026"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "AdministratorRDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "AdministratorRDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "AdministratorRDP"
+          $user = "runneradmin"
+          $pass = "FreeRdp@2026SG"
+          net user $user $pass
+          Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
 
-      - name: 4. Install Tailscale
+      - name: 4. Download and Start Playit.gg (No Card Required)
         run: |
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$env:TEMP\tailscale.msi`"", "/quiet", "/norestart" -Wait
-
-      - name: 5. Connect to Singapore Mesh Network
-        run: |
-          # Connects runner to Tailscale
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=singapore-rdp-$env:GITHUB_RUN_ID --accept-routes
+          New-Item -ItemType Directory -Force -Path "C:\playit"
+          Invoke-WebRequest -Uri "https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-windows-x86_64.exe" -OutFile "C:\playit\playit.exe"
           
-          $tsIP = $null
-          $i = 0
-          while (-not $tsIP -and $i -lt 15) {
-              Start-Sleep -Seconds 3
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              $i++
-          }
+          # Start Playit agent in background
+          Start-Process -FilePath "C:\playit\playit.exe" -RedirectStandardOutput "C:\playit\playit.log" -RedirectStandardError "C:\playit\error.log"
+          
+          Write-Host "Playit agent launched. Generating your tunnel address..."
+          Start-Sleep -Seconds 12
 
-          # Check Public IP and Location
-          $ipInfo = Invoke-RestMethod -Uri "https://ipinfo.io/json" -ErrorAction SilentlyContinue
-
+      - name: 5. Display Connection Information
+        run: |
           Write-Host "`n========================================================"
-          Write-Host "           SINGAPORE RDP SERVER ONLINE                  "
+          Write-Host "                PLAYIT CONNECTION LOGS                 "
           Write-Host "========================================================"
-          Write-Host " Tailscale IP : $tsIP"
-          Write-Host " Username     : AdministratorRDP"
-          Write-Host " Password     : FreeRdp@SG2026"
-          Write-Host " Hardware     : 4 Cores | 16 GB RAM (32 GB Virtual)"
+          
+          # Read Playit log to show the connection link
+          if (Test-Path "C:\playit\playit.log") {
+              Get-Content "C:\playit\playit.log" | Select-String -Pattern "claim|visit|ply.gg|connect" | ForEach-Object { Write-Host $_.Line }
+              Get-Content "C:\playit\playit.log" | Select-Object -Last 10 | ForEach-Object { Write-Host $_ }
+          }
+          
+          Write-Host "`n========================================================"
+          Write-Host " Username : runneradmin"
+          Write-Host " Password : FreeRdp@2026SG"
+          Write-Host " Hardware : 4 vCPU | 16 GB Physical RAM (32GB Total)"
           Write-Host "========================================================`n"
 
-      - name: Keep Server Running
+      - name: Keep Server Alive
         run: |
+          $counter = 0
           while ($true) {
-              Write-Host "[$(Get-Date)] Singapore Server is active..."
-              Start-Sleep -Seconds 300
+              if (Test-Path "C:\playit\playit.log") {
+                  $latest = Get-Content "C:\playit\playit.log" -Tail 2
+                  Write-Host "[$(Get-Date)] Status: $latest"
+              }
+              Start-Sleep -Seconds 60
+              $counter++
           }
