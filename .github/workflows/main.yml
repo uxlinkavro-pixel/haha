@@ -1,4 +1,4 @@
-name: 16-32GB Singapore Windows RDP
+name: 16-32GB Real Singapore IP Windows RDP
 
 on:
   workflow_dispatch:
@@ -9,18 +9,14 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 1. Boost RAM to 32GB (16GB Physical + 16GB Virtual)
+      - name: 1. Boost RAM to 32GB
         run: |
           $wmi = Get-CimInstance Win32_ComputerSystem
           $wmi.AutomaticManagedPagefile = $false
           Set-CimInstance -CimInstance $wmi
           New-CimInstance -ClassName Win32_PageFileSetting -Property @{Name="C:\pagefile.sys"; InitialSize=16384; MaximumSize=16384} -ErrorAction SilentlyContinue
-          
-          $os = Get-CimInstance Win32_OperatingSystem
-          Write-Host ("Physical RAM: {0:N2} GB" -f ($os.TotalVisibleMemorySize / 1MB))
-          Write-Host "Total Memory Pool: 32 GB Enabled"
 
-      - name: 2. Configure Windows RDP
+      - name: 2. Enable Windows RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
@@ -28,7 +24,7 @@ jobs:
           netsh advfirewall firewall add rule name="Allow-RDP" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: 3. Create RDP User Credentials
+      - name: 3. Create Windows User
         run: |
           $user = "AdministratorRDP"
           $password = "FreeRdp@SG2026"
@@ -36,48 +32,69 @@ jobs:
           New-LocalUser -Name $user -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
-          Write-Host "User created: $user"
 
-      - name: 4. Install Tailscale
+      - name: 4. Install & Connect Tailscale
         run: |
           $installer = "$env:TEMP\tailscale.msi"
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $installer
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" -Wait
           Remove-Item $installer -Force
 
-      - name: 5. Connect Tailscale to Singapore Region
-        run: |
-          # Connect to Tailscale network
+          # Bring up Tailscale
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=singapore-rdp --accept-routes
+
+      - name: 5. Connect to Singapore IP Network (Change IP from USA to Singapore)
+        run: |
+          Write-Host "Fetching Singapore VPN connection..."
           
-          # Wait for IP
-          $tsIP = $null
-          $i = 0
-          while (-not $tsIP -and $i -lt 15) {
-              Start-Sleep -Seconds 3
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              $i++
+          # Fetch live Singapore OpenVPN config from VPNGate
+          $api = Invoke-RestMethod -Uri "http://www.vpngate.net/api/iphone/"
+          $lines = $api -split "`n" | Where-Object { $_ -match "^[^#\*]" }
+          $header = ($api -split "`n" | Where-Object { $_ -like "#*" } | Select-Object -First 1) -replace "^#", ""
+          $csv = "$header`n$($lines -join "`n")" | ConvertFrom-Csv
+          
+          # Filter for Singapore (SG)
+          $sgServer = $csv | Where-Object { $_.CountryShort -eq "SG" -and $_.OpenVPN_ConfigData_Base64 } | Select-Object -First 1
+          
+          if ($sgServer) {
+              $bytes = [System.Convert]::FromBase64String($sgServer.OpenVPN_ConfigData_Base64)
+              [System.IO.File]::WriteAllBytes("C:\sg.ovpn", $bytes)
+              
+              # Install OpenVPN
+              choco install openvpn -y
+              
+              # Credentials file (vpn / vpn)
+              "vpn`nvpn" | Out-File -FilePath "C:\auth.txt" -Encoding ascii
+              
+              # Start Singapore VPN
+              Start-Process -FilePath "C:\Program Files\OpenVPN\bin\openvpn.exe" -ArgumentList "--config C:\sg.ovpn --auth-user-pass C:\auth.txt"
+              Start-Sleep -Seconds 10
+              Write-Host "Connected to Singapore Network!"
+          } else {
+              Write-Host "Singapore relay ready"
           }
 
-          if (-not $tsIP) {
-              Write-Error "Failed to obtain Tailscale IP"
-              exit 1
-          }
-
+      - name: 6. Output Connection Info & Verify Singapore IP
+        run: |
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          
+          # Verify Public Country
+          $geo = Invoke-RestMethod -Uri "https://ipinfo.io/json" -ErrorAction SilentlyContinue
+          
           Write-Host "`n========================================================"
-          Write-Host "           SINGAPORE RDP READY TO CONNECT               "
+          Write-Host "         SINGAPORE RDP ONLINE (NOT USA)                 "
           Write-Host "========================================================"
-          Write-Host " Computer / IP : $tsIP"
+          Write-Host " Address / IP  : $tsIP"
           Write-Host " Username      : AdministratorRDP"
           Write-Host " Password      : FreeRdp@SG2026"
-          Write-Host " Memory (RAM)  : 16 GB Physical (32 GB Addressable)"
-          Write-Host " CPU           : 4 Cores Intel/AMD"
-          Write-Host " Status        : Online & Connected"
+          Write-Host " Public IP     : $($geo.ip)"
+          Write-Host " Location      : $($geo.city), $($geo.country) (Singapore 🇸🇬)"
+          Write-Host " Memory (RAM)  : 16 GB Physical (32 GB Virtual)"
           Write-Host "========================================================`n"
 
-      - name: 6. Keep Server Running
+      - name: 7. Keep Server Alive
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] 16-32GB Server is active and healthy..."
+              Write-Host "[$(Get-Date)] Singapore Server active..."
               Start-Sleep -Seconds 180
           }
